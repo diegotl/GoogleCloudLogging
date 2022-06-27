@@ -112,7 +112,6 @@ public struct GoogleCloudLogHandler: LogHandler {
         didSet {
             if logging != nil {
                 timer.schedule(delay: uploadInterval, repeating: uploadInterval)
-                logger.debug("Log upload interval has been updated", metadata: [MetadataKey.uploadInterval: uploadInterval.map { "\($0)" } ?? "nil"])
             }
         }
     }
@@ -232,10 +231,6 @@ public struct GoogleCloudLogHandler: LogHandler {
         assert(Self.logging != nil, "App must setup GoogleCloudLogHandler before init")
         
         self.label = label
-        
-        DispatchQueue.main.async {
-            Self.logger.trace("GoogleCloudLogHandler has been initialized", metadata: [MetadataKey.label: "\(label)"])
-        }
     }
     
     
@@ -251,15 +246,7 @@ public struct GoogleCloudLogHandler: LogHandler {
                 hasher.combine(date)
                 return hasher.finalize()
             }
-            var metadata = metadata ?? [:]
-            var replacedMetadata = metadata.update(with: self.metadata)
-            if !replacedMetadata.isEmpty, file != #file || function != #function {
-                Self.logger.warning("Log metadata is replaced by logger metadata", metadata: [MetadataKey.replacedMetadata: .dictionary(replacedMetadata)])
-            }
-            replacedMetadata = metadata.update(with: Self.globalMetadata)
-            if !replacedMetadata.isEmpty, file != #file || function != #function {
-                Self.logger.warning("Log metadata is replaced by global metadata", metadata: [MetadataKey.replacedMetadata: .dictionary(replacedMetadata)])
-            }
+            let metadata = metadata ?? [:]
             let labels = metadata.mapValues { "\($0)" }
             let logEntry = GoogleCloudLogging.Log.Entry(logName: self.label,
                                                         timestamp: date,
@@ -275,9 +262,6 @@ public struct GoogleCloudLogHandler: LogHandler {
                 try fileHandle.legacyWrite(contentsOf: JSONEncoder().encode(logEntry))
                 try fileHandle.legacyWrite(contentsOf: [.newline])
             } catch {
-                if file != #file || function != #function {
-                    Self.logger.error("Unable to save log entry", metadata: [MetadataKey.logEntry: "\(logEntry)", MetadataKey.error: "\(error)"])
-                }
                 return
             }
             
@@ -303,62 +287,40 @@ public struct GoogleCloudLogHandler: LogHandler {
     
     static func uploadOnSchedule() {
         
-        logger.debug("Start uploading logs")
-        
         fileHandleQueue.async {
             do {
                 let fileHandle = try FileHandle(forReadingFrom: logFile)
                 guard let data = try fileHandle.legacyReadToEnd(), !data.isEmpty else {
-                    logger.debug("No logs to upload")
                     return
                 }
                 
                 var lines = data.split(separator: .newline)
                 let lineCount = lines.count
                 var logSize = lines.reduce(0) { $0 + $1.count }
-                let exclusionMessage = "Some log entries are excluded from the upload"
                 
                 if let maxLogEntrySize = maxLogEntrySize, logSize > maxLogEntrySize {
                     lines.removeAll { $0.count > maxLogEntrySize }
                     let removedLineCount = lineCount - lines.count
                     if removedLineCount > 0 {
                         logSize = lines.reduce(0) { $0 + $1.count }
-                        logger.warning("\(exclusionMessage) due to exceeding the log entry size limit", metadata: [MetadataKey.excludedLogEntryCount: "\(removedLineCount)", MetadataKey.maxLogEntrySize: "\(maxLogEntrySize)"])
                     }
                 }
                 
                 if let maxLogSize = maxLogSize, logSize > maxLogSize {
-                    let lineCount = lines.count
                     repeat {
                         logSize -= lines.removeFirst().count
                     } while logSize > maxLogSize
-                    let removedLineCount = lineCount - lines.count
-                    logger.warning("\(exclusionMessage) due to exceeding the log size limit", metadata: [MetadataKey.excludedLogEntryCount: "\(removedLineCount)", MetadataKey.maxLogSize: "\(maxLogSize)"])
                 }
                 
                 let decoder = JSONDecoder()
                 var logEntries = lines.compactMap { try? decoder.decode(GoogleCloudLogging.Log.Entry.self, from: $0) }
-                let undecodedLogEntryCount = lines.count - logEntries.count
-                if undecodedLogEntryCount > 0 {
-                    logger.warning("\(exclusionMessage) due to decoding failure", metadata: [MetadataKey.excludedLogEntryCount: "\(undecodedLogEntryCount)"])
-                }
                 
                 if let retentionPeriod = retentionPeriod {
-                    let logEntryCount = logEntries.count
                     logEntries.removeAll { $0.timestamp.map { -$0.timeIntervalSinceNow > retentionPeriod } ?? false }
-                    let removedLogEntryCount = logEntryCount - logEntries.count
-                    if removedLogEntryCount > 0 {
-                        logger.warning("\(exclusionMessage) due to exceeding the retention period", metadata: [MetadataKey.excludedLogEntryCount: "\(removedLogEntryCount)", MetadataKey.retentionPeriod: "\(retentionPeriod)"])
-                    }
                 }
                 
                 func deleteOldEntries() {
-                    do {
-                        try (fileHandle.legacyReadToEnd() ?? Data()).write(to: logFile, options: .atomic)
-                        logger.debug("Uploaded logs have been deleted")
-                    } catch {
-                        logger.error("Unable to delete uploaded logs", metadata: [MetadataKey.error: "\(error)"])
-                    }
+                    try? (fileHandle.legacyReadToEnd() ?? Data()).write(to: logFile, options: .atomic)
                 }
                 
                 func updateOldEntries() {
@@ -370,17 +332,11 @@ public struct GoogleCloudLogHandler: LogHandler {
                                 lines.append(data)
                             }
                             try Data(lines.joined(separator: [.newline])).write(to: logFile, options: .atomic)
-                            logger.debug("Overflowed or expired logs have been deleted")
-                        } else {
-                            logger.debug("No overflowed or expired logs to delete")
                         }
-                    } catch {
-                        logger.error("Unable to delete overflowed or expired logs", metadata: [MetadataKey.error: "\(error)"])
-                    }
+                    } catch {}
                 }
                 
                 guard let logging = logging else {
-                    logger.critical("Attempt to upload logs without GoogleCloudLogHandler setup")
                     updateOldEntries()
                     return
                 }
@@ -389,26 +345,13 @@ public struct GoogleCloudLogHandler: LogHandler {
                     fileHandleQueue.async {
                         switch result {
                         case .success:
-                            logger.info("Logs have been uploaded")
                             deleteOldEntries()
-                        case .failure(let error):
-                            switch error {
-                            case let error as NSError where error.domain == NSURLErrorDomain && error.code == NSURLErrorNotConnectedToInternet:
-                                logger.notice("Logs cannot be uploaded without an internet connection")
-                            case let error as NSError where error.domain == NSURLErrorDomain && error.code == NSURLErrorTimedOut:
-                                logger.notice("Logs may not have been uploaded due to poor internet connection")
-                            case GoogleCloudLogging.EntriesWriteError.noEntriesToSend:
-                                logger.notice("No relevant logs to upload")
-                            default:
-                                logger.error("Unable to upload logs", metadata: [MetadataKey.error: "\(error)"])
-                            }
+                        case .failure:
                             updateOldEntries()
                         }
                     }
                 }
-            } catch {
-                logger.error("Unable to read saved logs", metadata: [MetadataKey.error: "\(error)"])
-            }
+            } catch {}
         }
     }
 }
@@ -459,7 +402,7 @@ extension FileHandle {
     
     @discardableResult
     func legacySeekToEnd() throws -> UInt64 {
-        if #available(OSX 10.15, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
+        if #available(OSX 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
             return try seekToEnd()
         } else {
             return seekToEndOfFile()
@@ -467,7 +410,7 @@ extension FileHandle {
     }
     
     func legacyWrite<T>(contentsOf data: T) throws where T : DataProtocol {
-        if #available(OSX 10.15, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
+        if #available(OSX 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
             try write(contentsOf: data)
         } else {
             write(Data(data))
@@ -475,7 +418,7 @@ extension FileHandle {
     }
     
     func legacyReadToEnd() throws -> Data? {
-        if #available(OSX 10.15, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
+        if #available(OSX 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
             return try readToEnd()
         } else {
             return readDataToEndOfFile()
