@@ -247,8 +247,8 @@ public struct GoogleCloudLogHandler: LogHandler {
                 return hasher.finalize()
             }
             var metadata = metadata ?? [:]
-            var replacedMetadata = metadata.update(with: self.metadata)
-            replacedMetadata = replacedMetadata.update(with: Self.globalMetadata)
+            metadata += self.metadata
+            metadata += Self.globalMetadata
             let labels = metadata.mapValues { "\($0)" }
             let logEntry = GoogleCloudLogging.Log.Entry(logName: self.label,
                                                         timestamp: date,
@@ -428,8 +428,6 @@ extension FileHandle {
     }
 }
 
-
-
 extension DispatchSourceTimer {
 
     func schedule(delay: TimeInterval?, repeating: TimeInterval?) {
@@ -437,18 +435,13 @@ extension DispatchSourceTimer {
     }
 }
 
-
-
 extension Dictionary {
 
-    mutating func update(with other: [Key : Value]) -> [Key : Value] {
-        var replaced = [Key : Value]()
-        self = other.reduce(into: self) { replaced[$1.key] = $0.updateValue($1.value, forKey: $1.key) }
-        return replaced
+    static func +=(lhs: inout Self, rhs: Self) {
+        lhs.merge(rhs) { _ , new in new }
     }
+
 }
-
-
 
 extension GoogleCloudLogHandler.MetadataKey {
 

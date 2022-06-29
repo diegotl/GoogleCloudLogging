@@ -63,20 +63,20 @@ final class GoogleCloudLoggingTests: XCTestCase {
     }
     
     
-    func testDictionaryUpdate() {
+    func testDictionaryMerge() {
         
         var dictionary = ["a": 1, "b": 2]
         
-        XCTAssertEqual(dictionary.update(with: [:]), [:])
+        dictionary += [:]
         XCTAssertEqual(dictionary, ["a": 1, "b": 2])
         
-        XCTAssertEqual(dictionary.update(with: ["c": 3, "b": 2]), ["b": 2])
+        dictionary += ["c": 3, "b": 2]
         XCTAssertEqual(dictionary, ["a": 1, "b": 2, "c": 3])
         
-        XCTAssertEqual(dictionary.update(with: ["a": 0]), ["a": 1])
+        dictionary += ["a": 0]
         XCTAssertEqual(dictionary, ["a": 0, "b": 2, "c": 3])
         
-        XCTAssertEqual(dictionary.update(with: ["d": 1, "e": 0]), [:])
+        dictionary += ["d": 1, "e": 0]
         XCTAssertEqual(dictionary, ["a": 0, "b": 2, "c": 3, "d": 1, "e": 0])
     }
     
